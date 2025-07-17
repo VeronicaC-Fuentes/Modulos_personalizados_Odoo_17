@@ -6,7 +6,7 @@
         'stock',
         'purchase',
         'sale_management',
-        'account_accountant',    # <-- para heredar account.move
+        'account_accountant',
     ],
     'author': 'Verónica',
     'category': 'Customization',

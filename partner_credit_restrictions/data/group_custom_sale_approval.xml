@@ -3,7 +3,6 @@
         <record id="group_custom_sale_approval" model="res.groups">
             <field name="name">Aprobación de Ventas</field>
             <field name="category_id" ref="base.module_category_sales"/>
-            <!-- Aquí puedes agregar más campos según sea necesario -->
         </record>
     </data>
 </odoo>

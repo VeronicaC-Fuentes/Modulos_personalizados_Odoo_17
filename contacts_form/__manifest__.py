@@ -1,7 +1,7 @@
 {
     "name": "Custom Contacts Form",
     "version": "17.0.1.0.0",
-    "author": "Vero",
+    "author": "Verónica Cryces",
     "depends": [
         "base",
         "contacts",

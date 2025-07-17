@@ -6,7 +6,6 @@
     <field name="priority" eval="16" />
     <field name="arch" type="xml">
 
-      <!-- Sobrescribe el primer group principal del formulario -->
       <xpath expr="//sheet/group[1]" position="replace">
         <group>
           <field name="street" string="Calle" />

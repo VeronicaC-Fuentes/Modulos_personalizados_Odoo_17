@@ -34,7 +34,7 @@ class ResPartner(models.Model):
     company_id = fields.Many2one(
         'res.company',
         string="Compañía",
-        default=lambda self: self.env.company.id  # <-- ¡La compañía ACTIVA!
+        default=lambda self: self.env.company.id
     )
 
     @api.constrains("is_company", "l10n_latam_identification_type_id")
