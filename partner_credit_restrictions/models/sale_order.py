@@ -6,9 +6,9 @@ import logging
 
 _logger = logging.getLogger(__name__)
 
-
 # ------------------------------------------------------------------
-# Sale Order Line
+# Sale Order Line: Extiende líneas de pedido para controlar estado
+# ganado/perdido y autorización por debajo de costo
 # ------------------------------------------------------------------
 class SaleOrderLine(models.Model):
     _inherit = 'sale.order.line'
@@ -25,8 +25,14 @@ class SaleOrderLine(models.Model):
     )
 
     def write(self, vals):
+        """
+        Impide guardar una línea con precio menor al costo si no está autorizada.
+        Permite override para lógica estándar Odoo.
+        """
         for line in self:
+            # Solo productos (no servicios ni consumibles)
             if line.product_id and line.product_id.type == 'product':
+                # Obtener costo estándar (convertido a moneda de la orden si aplica)
                 cost = line.product_id.standard_price
                 if line.order_id.currency_id != line.product_id.currency_id:
                     cost = line.product_id.currency_id._convert(
@@ -35,6 +41,7 @@ class SaleOrderLine(models.Model):
                         line.company_id,
                         line.order_id.date_order or fields.Date.today(),
                     )
+                # Detectar si el precio es menor al costo y no está autorizado
                 new_price = vals.get('price_unit', line.price_unit)
                 if (
                     new_price < cost
@@ -48,7 +55,8 @@ class SaleOrderLine(models.Model):
 
 
 # ------------------------------------------------------------------
-# Sale Order
+# Sale Order: Lógica principal de cotización y OV "Ganada"
+# Control de aprobación, límites de crédito y reactivación
 # ------------------------------------------------------------------
 class SaleOrder(models.Model):
     _inherit = 'sale.order'
@@ -66,6 +74,10 @@ class SaleOrder(models.Model):
 
     # ---------------- helpers ----------------
     def _get_won_lines(self):
+        """
+        Retorna las líneas GANADAS, con producto válido (producto, servicio o consumible).
+        Útil para validar monto ganado y generación de OV.
+        """
         self.ensure_one()
         return self.order_line.filtered(
             lambda l: l.estado_producto == 'ganado'
@@ -74,7 +86,10 @@ class SaleOrder(models.Model):
         )
 
     def _won_amount_company(self):
-        """Subtotal SIN IGV de líneas GANADAS en moneda de compañía."""
+        """
+        Calcula el subtotal SIN IGV de líneas GANADAS en la moneda de la compañía.
+        Redondea el resultado según la moneda de la empresa.
+        """
         self.ensure_one()
         cc = self.company_id.currency_id
         total = 0.0
@@ -88,8 +103,11 @@ class SaleOrder(models.Model):
 
     # ------------- validación de crédito SOLO GANADO -------------
     def _check_credit_limit_won(self):
+        """
+        Valida el límite de crédito solo considerando las líneas GANADAS.
+        Lanza error si el cliente supera el límite.
+        """
         for order in self:
-            # Sólo usamos el campo credit_limit (Float) — no referenciamos más property_credit_limit
             limit = order.partner_id.credit_limit or 0.0
             if not limit:
                 continue
@@ -109,7 +127,10 @@ class SaleOrder(models.Model):
 
     # ---------------- lógica GANADO / PERDIDO ----------------
     def _crear_ov_ganada(self):
-        """Crea y confirma una OV con solo GANADOS; devuelve el registro."""
+        """
+        Crea y confirma una Orden de Venta nueva, solo con líneas GANADAS.
+        Devuelve el nuevo registro OV (usado para separar venta real del resto).
+        """
         self.ensure_one()
         won_lines = self._get_won_lines()
         if not won_lines:
@@ -137,12 +158,19 @@ class SaleOrder(models.Model):
 
     # ---------------- acción CONFIRMAR ----------------
     def action_confirm(self):
+        """
+        Al confirmar, valida:
+        - Si el cliente tiene facturas vencidas (bloqueado → pasa a 'to_approve')
+        - El límite de crédito considerando solo GANADOS
+        - Genera nueva OV si corresponde
+        - Si viene de contexto especial, omite validación (bypass)
+        """
         if self.env.context.get('bypass_validation'):
             return super().action_confirm()
 
         for order in self:
             order.partner_id.check_invoices_overdue()
-            # facturas vencidas
+            # Si el cliente está bloqueado por facturas vencidas, requiere aprobación
             if order.partner_id.blocked:
                 order.approval_state = 'to_approve'
                 raise UserError(_(
@@ -150,11 +178,11 @@ class SaleOrder(models.Model):
                     "Necesita aprobación."
                 ))
 
-            # precio < costo (ya comprobado en write)
-            # crédito sobre GANADOS
+            # Validación de precio < costo ya ocurre en write
+            # Ahora: límite de crédito sobre GANADOS
             order._check_credit_limit_won()
 
-            # genera OV
+            # Si pasa todo, genera OV GANADA y muestra notificación
             ov = order._crear_ov_ganada()
             return {
                 'type': 'ir.actions.client',
@@ -169,6 +197,11 @@ class SaleOrder(models.Model):
 
     # ---------------- acción APROBAR ----------------
     def action_approve(self):
+        """
+        Permite aprobar la OV si el usuario tiene permisos y el cliente sigue bloqueado.
+        Si el cliente ya está habilitado, muestra error. Si sigue bloqueado, desbloquea,
+        aprueba, valida límite de crédito y genera la OV GANADA.
+        """
         if not self.env.user.has_group(
             'partner_credit_restrictions.group_custom_sale_approval'
         ):
@@ -179,11 +212,11 @@ class SaleOrder(models.Model):
             if not order.partner_id.blocked:
                 raise UserError(_("Ya no hay facturas vencidas; no requiere aprobación."))
 
-            # Si el cliente sigue bloqueado, liberamos y seguimos
+            # Desbloquea al cliente, cambia estado y continúa
             order.partner_id.blocked = False
             order.approval_state = 'sale'
 
-            # Validamos crédito sobre GANADOS y generamos OV
+            # Valida crédito y genera OV
             order._check_credit_limit_won()
             ov = order._crear_ov_ganada()
 
@@ -199,9 +232,12 @@ class SaleOrder(models.Model):
 
     # ---------------- reactivación ---------------
     def action_reactivate_sale(self):
+        """
+        Permite reactivar una OV solo si está cancelada.
+        Cambia estado a 'sale' y registra en log.
+        """
         for order in self:
             if order.state != 'cancel':
                 raise UserError(_("Solo las órdenes canceladas pueden reactivarse."))
             order.state = 'sale'
             _logger.info("Orden %s reactivada a 'sale'", order.name)
-

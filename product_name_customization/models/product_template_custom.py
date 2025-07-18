@@ -6,7 +6,10 @@ from odoo.exceptions import UserError
 # --------------------
 
 def normalize(text):
+    """Convierte el texto a mayúsculas, sin espacios (para comparar claves)."""
     return ''.join(text.upper().split())
+
+# Mapeos de familia y línea a códigos internos, según reglas de negocio
 
 FAMILY_CODE_MAP = {
     "ALTURAS": "10",
@@ -130,6 +133,7 @@ LINE_CODE_MAP = {
     ("ACTIVO FIJO", "1000"): "1000",
 }
 
+# Versión "normalizada" de los mapeos, para evitar problemas de mayúsculas/espacios
 FAMILY_CODE_MAP_NORM = {normalize(k): v for k, v in FAMILY_CODE_MAP.items()}
 LINE_CODE_MAP_NORM = {(normalize(k1), normalize(k2)): v for (k1, k2), v in LINE_CODE_MAP.items()}
 
@@ -137,15 +141,16 @@ LINE_CODE_MAP_NORM = {(normalize(k1), normalize(k2)): v for (k1, k2), v in LINE_
 # MODELO ODOO
 # --------------------
 
-
 class ProductTemplate(models.Model):
+    """Extiende product.template para reglas personalizadas de extintores,
+    codificación automática y gestión de reglas de reabastecimiento."""
     _inherit = "product.template"
 
     # ------------------------------------------------
     # CAMPOS
     # ------------------------------------------------
 
-    # Tipo general del producto
+    # Selección del tipo general de producto
     tipo_producto = fields.Selection([
         ("normal", "Producto Normal"),
         ("extintor", "Extintor"),
@@ -163,7 +168,6 @@ class ProductTemplate(models.Model):
         help="Porcentaje para extintores PQS",
         digits=(5, 2),
     )
-
     clase_extintor = fields.Char("Clase")
     codigo_un = fields.Char("Código UN")
     peso = fields.Float("Peso")
@@ -204,6 +208,7 @@ class ProductTemplate(models.Model):
         compute="_compute_has_reorder_rule",
     )
 
+    # Parámetros por defecto para reglas de reabastecimiento
     _ORDERPOINT_MIN = 0
     _ORDERPOINT_MAX = 0
     _ORDERPOINT_MULTIPLE = 1
@@ -221,7 +226,11 @@ class ProductTemplate(models.Model):
         "peso", "uom_peso", "codigo_un", "clase_extintor",
     )
     def _compute_name(self):
-        """Genera el nombre automáticamente con las reglas acordadas."""
+        """
+        Genera el nombre automáticamente, según reglas acordadas.
+        Si es extintor, concatena tipo, % y otros atributos.
+        Si es normal, concatena atributos básicos.
+        """
         for product in self:
             if product.tipo_producto == "extintor":
                 parts = [product.descripcion_basica]
@@ -263,14 +272,21 @@ class ProductTemplate(models.Model):
 
     @api.depends("categ_id", "company_id")
     def _compute_default_code(self):
+        """
+        Genera automáticamente el código interno (default_code) del producto,
+        según familia y línea, siguiendo el mapeo definido.
+        Autoincrementa la secuencia para evitar duplicados.
+        """
         for product in self:
             if product.categ_id and product.company_id:
+                # Busca códigos de familia y línea ya normalizados
                 family_name = normalize(product.categ_id.parent_id.name) if product.categ_id.parent_id else None
                 line_name = normalize(product.categ_id.name)
 
                 family_code = FAMILY_CODE_MAP_NORM.get(family_name, "99") if family_name else "99"
                 line_code = LINE_CODE_MAP_NORM.get((family_name, line_name), "99999") if family_name else "99999"
 
+                # Busca códigos existentes con el mismo prefijo
                 domain = [
                     ("default_code", "like", f"{family_code}{line_code}%"),
                     ("company_id", "=", product.company_id.id),
@@ -279,6 +295,7 @@ class ProductTemplate(models.Model):
                 max_seq = 0
                 for rec in existing:
                     code = rec.default_code or ""
+                    # Valida formato y extrae la secuencia al final del código
                     if code.startswith(f"{family_code}{line_code}") and len(code) == len(family_code) + len(line_code) + 6:
                         try:
                             seq_val = int(code[-6:])
@@ -296,6 +313,10 @@ class ProductTemplate(models.Model):
 
     @api.depends("product_variant_ids.orderpoint_ids")
     def _compute_has_reorder_rule(self):
+        """
+        Indica si alguna variante del producto tiene definida una regla de reabastecimiento.
+        Se busca la primera coincidencia por eficiencia.
+        """
         OrderPoint = self.env["stock.warehouse.orderpoint"]
         for product in self:
             vids = product.product_variant_ids.ids
@@ -307,11 +328,19 @@ class ProductTemplate(models.Model):
 
     @api.model_create_multi
     def create(self, vals_list):
+        """
+        Sobreescribe create para garantizar que todos los productos creados
+        tengan al menos un proveedor y una regla de reabastecimiento.
+        """
         products = super().create(vals_list)
         products._ensure_reorder_rule()
         return products
 
     def write(self, vals):
+        """
+        Sobreescribe write para aplicar lógica de reglas de reabastecimiento
+        tras editar cualquier producto.
+        """
         res = super().write(vals)
         self._ensure_reorder_rule()
         return res
@@ -321,20 +350,28 @@ class ProductTemplate(models.Model):
     # ------------------------------------------------
 
     def _ensure_reorder_rule(self):
+        """
+        Asegura que cada variante del producto tenga su regla de reabastecimiento
+        asociada a un almacén de la compañía. Crea la regla si no existe.
+        Valida que haya al menos un proveedor.
+        """
         OrderPoint = self.env["stock.warehouse.orderpoint"]
         Warehouse = self.env["stock.warehouse"]
         cache_wh = {}
         for product in self:
+            # Debe tener al menos un proveedor definido (regla de negocio)
             if not product.seller_ids:
                 raise UserError(_(
                     "El producto '%s' debe tener al menos un proveedor definido." % product.display_name))
 
             company = product.company_id or self.env.company
+            # Cachea almacenes por compañía para eficiencia
             wh = cache_wh.setdefault(company.id, Warehouse.search([("company_id", "=", company.id)], limit=1))
             if not wh:
                 raise UserError(_(
                     "No se encontró ningún almacén para la compañía '%s'." % company.display_name))
 
+            # Asegura la regla para cada variante del producto
             for variant in product.product_variant_ids:
                 exists = OrderPoint.search_count([
                     ("product_id", "=", variant.id),

@@ -1,11 +1,14 @@
 <odoo>
+  <!-- Vista personalizada para agregar contactos principales y campos extra a res.partner -->
   <record id="view_partner_form_contacts_form" model="ir.ui.view">
     <field name="name">res.partner.form.contacts_form</field>
     <field name="model">res.partner</field>
+    <!-- Heredamos la vista base de partners -->
     <field name="inherit_id" ref="base.view_partner_form" />
     <field name="priority" eval="16" />
     <field name="arch" type="xml">
 
+      <!-- Reemplazamos el primer group de dirección para añadir campos personalizados de localización -->
       <xpath expr="//sheet/group[1]" position="replace">
         <group>
           <field name="street" string="Calle" />
@@ -19,11 +22,12 @@
           <field name="l10n_latam_identification_type_id" string="Tipo de Identificación" />
           <field name="vat" string="Número" />
           <field name="company_id" string="Compañía" />
-          <field name="industry_id" string="Sector" options="{'no_create': True}" /> <!-- AQUI -->
+          <!-- Solo permite seleccionar sector existente, no crear nuevos desde aquí -->
+          <field name="industry_id" string="Sector" options="{'no_create': True}" />
           <field name="category_id" widget="many2many_tags" placeholder="Etiquetas"
             string="Etiquetas" />
           <field name="x_studio_agente_de_retencin" string="Agente de Retención" />
-          <!-- Campos invisibles para lógica base -->
+          <!-- Campos invisibles requeridos por lógica estándar de Odoo -->
           <field name="type" invisible="1" />
           <field name="lang" invisible="1" />
           <field name="user_id" invisible="1" />
@@ -32,7 +36,7 @@
         </group>
       </xpath>
 
-      <!-- Contactos principales debajo del group principal -->
+      <!-- Añadimos secciones de contactos principales, agrupados por área -->
       <xpath expr="//page[@name='contact_addresses']" position="inside">
         <group string="Contactos principales" col="2">
           <group string="Comercial">
@@ -62,12 +66,16 @@
         </group>
       </xpath>
 
-
-      <!-- Dominio dinámico para tipo de identificación -->
+      <!--
+        Dominio dinámico según si es compañía o persona:
+        - Solo muestra tipos de documento válidos para cada caso.
+        - Esto debe coincidir con la validación del modelo en Python.
+      -->
       <xpath expr="//field[@name='l10n_latam_identification_type_id']" position="attributes">
         <attribute name="domain">
           [('l10n_pe_vat_code','in', is_company and ['6','0'] or ['1','4','7'])]
         </attribute>
+        <!-- Mostrar el campo en línea para ahorrar espacio -->
         <attribute name="class">oe_inline</attribute>
       </xpath>
     </field>
