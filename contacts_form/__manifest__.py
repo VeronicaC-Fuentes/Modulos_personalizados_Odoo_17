@@ -21,7 +21,7 @@
     "data": [
         "views/res_partner_form.xml",
     ],
-    "maintainer": "Verónica Cryces",
+    "maintainer": "Verónica Cruces",
     "installable": True,
     "application": False,
 }
